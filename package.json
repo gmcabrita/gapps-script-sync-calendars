@@ -1,0 +1,8 @@
+{
+  "name": "gapps-script-sync-calendars",
+  "private": true,
+  "scripts": {
+    "test": "node --test shared/*.test.cjs source/*.test.cjs destination/*.test.cjs"
+  },
+  "engines": { "node": ">=20" }
+}
