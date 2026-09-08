@@ -1,25 +1,49 @@
 const DESTINATION_CALENDAR_ID = 'primary';
 const DESTINATION_MAPPING_PREFIX = 'SYNC_EVENT_';
 
-/** Build a public out of office event without source titles, descriptions, or attendees. */
-function buildDestinationEvent(event) {
+/** Limit the buffer to one day per side to prevent long blocks from a configuration error. */
+function parseDestinationBufferMinutes(value) {
+  if (value === null) return 10;
+  const text = typeof value === 'string' ? value.trim() : '';
+  const minutes = Number(text);
+  if (!/^\d+$/.test(text) || minutes > 1440) {
+    throw new Error('Destination OOO_BUFFER_MINUTES must be an integer from 0 to 1440.');
+  }
+  return minutes;
+}
+
+/** Apply the buffer to source times on each sync so repeated syncs cannot extend it again. */
+function buildDestinationEvent(event, bufferMinutes) {
+  const bufferMs = bufferMinutes * 60 * 1000;
   return {
     summary: 'Out of office',
     visibility: 'public',
     transparency: 'opaque',
-    start: event.start,
-    end: event.end,
+    start: {
+      dateTime: new Date(Date.parse(event.start.dateTime) - bufferMs).toISOString(),
+      timeZone: event.start.timeZone,
+    },
+    end: {
+      dateTime: new Date(Date.parse(event.end.dateTime) + bufferMs).toISOString(),
+      timeZone: event.end.timeZone,
+    },
     outOfOfficeProperties: {
       autoDeclineMode: 'declineAllConflictingInvitations',
       declineMessage: 'Declined because I am out of office',
     },
-    extendedProperties: {private: {syncOwner: SYNC_SETTINGS.owner, syncId: event.syncId}},
+    extendedProperties: {private: {
+      syncOwner: SYNC_SETTINGS.owner,
+      syncId: event.syncId,
+      syncSourceEnd: event.end.dateTime,
+    }},
   };
 }
 
 /** Avoid Calendar writes and repeated decline processing when the managed fields match. */
 function destinationEventNeedsUpdate(current, desired) {
-  return ['summary', 'visibility'].some(function (field) {
+  const metadata = current.extendedProperties && current.extendedProperties.private;
+  return !metadata || metadata.syncSourceEnd !== desired.extendedProperties.private.syncSourceEnd ||
+    ['summary', 'visibility'].some(function (field) {
     return current[field] !== desired[field];
   }) || (current.transparency || 'opaque') !== desired.transparency ||
     ['start', 'end'].some(function (field) {
@@ -36,6 +60,7 @@ function assertDestinationOwnership(event, syncId) {
   const metadata = event.extendedProperties && event.extendedProperties.private;
   if (event.eventType !== 'outOfOffice' || !metadata || metadata.syncOwner !== SYNC_SETTINGS.owner ||
       metadata.syncId !== syncId || !/^[0-9a-f]{64}$/.test(syncId) ||
+      (metadata.syncSourceEnd !== undefined && !Number.isFinite(Date.parse(metadata.syncSourceEnd))) ||
       !event.end || !Number.isFinite(Date.parse(event.end.dateTime))) {
     throw new Error('Destination event ownership or interval invalid.');
   }
@@ -94,8 +119,8 @@ function collectDestinationCopies(snapshot, properties) {
 }
 
 /** Persist insert IDs before API calls so a lost insert response cannot create a duplicate. */
-function upsertDestinationCopy(sourceEvent, copy, properties) {
-  const desired = buildDestinationEvent(sourceEvent);
+function upsertDestinationCopy(sourceEvent, copy, properties, bufferMinutes) {
+  const desired = buildDestinationEvent(sourceEvent, bufferMinutes);
   const mappingKey = DESTINATION_MAPPING_PREFIX + sourceEvent.syncId;
   let current = copy && copy.event;
   let eventId = copy && copy.eventId;
@@ -129,18 +154,22 @@ function upsertDestinationCopy(sourceEvent, copy, properties) {
 
 /** Keep history before the window; remove only managed copies absent from a complete snapshot. */
 function reconcileDestinationCalendar(snapshot, properties) {
+  const bufferMinutes = parseDestinationBufferMinutes(properties.getProperty('OOO_BUFFER_MINUTES'));
   const copies = collectDestinationCopies(snapshot, properties);
   const desiredIds = new Set(snapshot.events.map(function (event) { return event.syncId; }));
   const counts = {created: 0, updated: 0, deleted: 0, unchanged: 0};
   // Complete every create/update before deletions. An API failure is repaired by the next poll.
   snapshot.events.forEach(function (event) {
-    counts[upsertDestinationCopy(event, copies.get(event.syncId), properties)]++;
+    counts[upsertDestinationCopy(event, copies.get(event.syncId), properties, bufferMinutes)]++;
   });
   copies.forEach(function (copy, syncId) {
     if (desiredIds.has(syncId)) return;
     if (copy.event && copy.event.status !== 'cancelled') {
       assertDestinationOwnership(copy.event, syncId);
-      if (Date.parse(copy.event.end.dateTime) > Date.parse(snapshot.windowStart)) {
+      // Use the original end time so a buffer does not cause deletion when a copy becomes history.
+      // Copies created before buffering was added have their original end time in the event itself.
+      const sourceEnd = copy.event.extendedProperties.private.syncSourceEnd || copy.event.end.dateTime;
+      if (Date.parse(sourceEnd) > Date.parse(snapshot.windowStart)) {
         Calendar.Events.remove(DESTINATION_CALENDAR_ID, copy.eventId);
         counts.deleted++;
       }

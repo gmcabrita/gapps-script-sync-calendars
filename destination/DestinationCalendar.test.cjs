@@ -24,6 +24,8 @@ test('creates genuine public out of office events with the screenshot decline se
   assert.equal(event.transparency ?? 'opaque', 'opaque');
   assert.equal(calendarWrites(harness)[0].event.transparency, 'opaque');
   assert.equal(event.summary, 'Out of office');
+  assert.equal(event.start.dateTime, '2026-09-08T12:50:00.000Z');
+  assert.equal(event.end.dateTime, '2026-09-08T14:10:00.000Z');
   assert.equal(event.outOfOfficeProperties.autoDeclineMode, 'declineAllConflictingInvitations');
   assert.equal(event.outOfOfficeProperties.declineMessage, 'Declined because I am out of office');
   assert.equal(event.extendedProperties.private.syncId, TEST_SYNC_ID);
@@ -44,8 +46,87 @@ test('unchanged snapshots do not write; moved events update the existing copy', 
   assert.equal(postSnapshot(harness, moved).ok, true);
   assert.equal(activeEvents(harness).length, 1);
   assert.equal(activeEvents(harness)[0].id, originalId);
-  assert.equal(activeEvents(harness)[0].start.dateTime, moved.events[0].start.dateTime);
+  assert.equal(activeEvents(harness)[0].start.dateTime, '2026-09-08T13:20:00.000Z');
+  assert.equal(activeEvents(harness)[0].end.dateTime, '2026-09-08T14:10:00.000Z');
   assert.equal(calendarWrites(harness).at(-1).operation, 'patch');
+});
+
+test('buffer changes update an existing copy and zero disables the buffer', () => {
+  const harness = createAppsScriptHarness();
+  harness.saved.OOO_BUFFER_MINUTES = '25';
+  assert.equal(postSnapshot(harness).ok, true);
+  const originalId = activeEvents(harness)[0].id;
+  assert.equal(activeEvents(harness)[0].start.dateTime, '2026-09-08T12:35:00.000Z');
+  assert.equal(activeEvents(harness)[0].end.dateTime, '2026-09-08T14:25:00.000Z');
+  harness.saved.OOO_BUFFER_MINUTES = '0';
+  assert.equal(postSnapshot(harness, createTestSnapshot(TEST_NOW + 1)).ok, true);
+  assert.equal(activeEvents(harness)[0].id, originalId);
+  assert.equal(activeEvents(harness)[0].start.dateTime, '2026-09-08T13:00:00.000Z');
+  assert.equal(activeEvents(harness)[0].end.dateTime, '2026-09-08T14:00:00.000Z');
+  const writes = calendarWrites(harness).length;
+  assert.equal(postSnapshot(harness, createTestSnapshot(TEST_NOW + 2)).ok, true);
+  assert.equal(calendarWrites(harness).length, writes);
+});
+
+test('invalid buffer settings cause no Calendar reads or writes', () => {
+  for (const value of ['', ' ', '-1', '1.5', 'invalid', '1441', 'Infinity']) {
+    const harness = createAppsScriptHarness();
+    harness.saved.OOO_BUFFER_MINUTES = value;
+    assert.equal(postSnapshot(harness).ok, false);
+    assert.equal(harness.calls.length, 0);
+  }
+  const {context} = createAppsScriptHarness();
+  assert.equal(context.parseDestinationBufferMinutes(' 1440 '), 1440);
+});
+
+test('buffer uses elapsed minutes across midnight and daylight saving changes without modifying source data', () => {
+  const {context} = createAppsScriptHarness();
+  for (const times of [
+    ['2026-09-08T00:05:00.000Z', '2026-09-08T23:55:00.000Z',
+      '2026-09-07T23:55:00.000Z', '2026-09-09T00:05:00.000Z', 'UTC'],
+    ['2026-11-01T05:55:00.000Z', '2026-11-01T06:05:00.000Z',
+      '2026-11-01T05:45:00.000Z', '2026-11-01T06:15:00.000Z', 'America/New_York'],
+  ]) {
+    const sourceEvent = {syncId: TEST_SYNC_ID,
+      start: {dateTime: times[0], timeZone: times[4]},
+      end: {dateTime: times[1], timeZone: times[4]}};
+    const original = structuredClone(sourceEvent);
+    const copy = context.buildDestinationEvent(sourceEvent, 10);
+    assert.equal(copy.start.dateTime, times[2]);
+    assert.equal(copy.end.dateTime, times[3]);
+    assert.equal(copy.start.timeZone, times[4]);
+    assert.equal(copy.end.timeZone, times[4]);
+    assert.deepEqual(sourceEvent, original);
+  }
+});
+
+test('copies created before buffering are updated in place', () => {
+  const harness = createAppsScriptHarness();
+  postSnapshot(harness);
+  const copy = activeEvents(harness)[0];
+  delete copy.extendedProperties.private.syncSourceEnd;
+  copy.start = structuredClone(createTestSnapshot().events[0].start);
+  copy.end = structuredClone(createTestSnapshot().events[0].end);
+  assert.equal(postSnapshot(harness, createTestSnapshot(TEST_NOW + 1)).ok, true);
+  assert.equal(activeEvents(harness)[0].id, copy.id);
+  assert.equal(activeEvents(harness)[0].start.dateTime, '2026-09-08T12:50:00.000Z');
+  assert.equal(activeEvents(harness)[0].end.dateTime, '2026-09-08T14:10:00.000Z');
+  assert.equal(activeEvents(harness)[0].extendedProperties.private.syncSourceEnd,
+    '2026-09-08T14:00:00.000Z');
+});
+
+test('buffered copies become history when their original end leaves the source window', () => {
+  const harness = createAppsScriptHarness();
+  const snapshot = createTestSnapshot();
+  snapshot.events[0].start.dateTime = '2026-09-07T11:00:00.000Z';
+  snapshot.events[0].end.dateTime = '2026-09-07T12:05:00.000Z';
+  assert.equal(postSnapshot(harness, snapshot).ok, true);
+  harness.setNow(TEST_NOW + 10 * 60000);
+  harness.saved.OOO_BUFFER_MINUTES = '60';
+  assert.equal(postSnapshot(harness, createTestSnapshot(TEST_NOW + 10 * 60000, [])).ok, true);
+  assert.equal(activeEvents(harness).length, 1);
+  assert.equal(activeEvents(harness)[0].end.dateTime, '2026-09-07T12:15:00.000Z');
+  assert.equal(harness.saved['SYNC_EVENT_' + TEST_SYNC_ID], undefined);
 });
 
 test('an empty snapshot deletes only managed copies; past history remains', () => {
