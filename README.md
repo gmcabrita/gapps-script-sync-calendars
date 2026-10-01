@@ -24,6 +24,7 @@ B creates events in its **primary calendar** with these settings:
 | End | Source end plus `OOO_BUFFER_MINUTES` (default: 10 minutes) |
 | Automatically decline | New and existing conflicting invitations |
 | Decline message | Declined because I am out of office |
+| Notifications | None |
 
 **This can decline meetings already accepted in B.** Removing an out of office event does not restore those acceptances. Test with accounts and calendars where this effect is acceptable.
 

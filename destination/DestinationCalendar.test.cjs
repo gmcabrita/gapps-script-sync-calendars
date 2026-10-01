@@ -30,6 +30,9 @@ test('creates genuine public out of office events with the screenshot decline se
   assert.equal(event.outOfOfficeProperties.declineMessage, 'Declined because I am out of office');
   assert.equal(event.extendedProperties.private.syncId, TEST_SYNC_ID);
   assert.equal(event.description, undefined);
+  assert.deepEqual(calendarWrites(harness)[0].event.reminders, {useDefault: false, overrides: []});
+  assert.equal(event.reminders.useDefault, false);
+  assert.equal(event.reminders.overrides, undefined);
   assert.equal(event.attendees, undefined);
   assert.equal(harness.calls.every((call) => call.calendarId === 'primary'), true);
   assert.equal(harness.lock.held, false);
@@ -97,6 +100,22 @@ test('buffer uses elapsed minutes across midnight and daylight saving changes wi
     assert.equal(copy.start.timeZone, times[4]);
     assert.equal(copy.end.timeZone, times[4]);
     assert.deepEqual(sourceEvent, original);
+  }
+});
+
+test('copies with default or custom reminders are updated to have no reminders', () => {
+  for (const reminders of [undefined, {useDefault: true},
+    {useDefault: false, overrides: [{method: 'popup', minutes: 5}]}]) {
+    const harness = createAppsScriptHarness();
+    postSnapshot(harness);
+    const copy = activeEvents(harness)[0];
+    if (reminders) copy.reminders = reminders; else delete copy.reminders;
+    assert.equal(postSnapshot(harness, createTestSnapshot(TEST_NOW + 1)).ok, true);
+    assert.equal(calendarWrites(harness).at(-1).operation, 'patch');
+    assert.deepEqual(activeEvents(harness)[0].reminders, {useDefault: false});
+    const writes = calendarWrites(harness).length;
+    assert.equal(postSnapshot(harness, createTestSnapshot(TEST_NOW + 2)).ok, true);
+    assert.equal(calendarWrites(harness).length, writes);
   }
 });
 

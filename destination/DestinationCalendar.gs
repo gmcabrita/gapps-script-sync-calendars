@@ -19,6 +19,8 @@ function buildDestinationEvent(event, bufferMinutes) {
     summary: 'Out of office',
     visibility: 'public',
     transparency: 'opaque',
+    // Turn off the calendar default reminders. An empty overrides list means no notifications.
+    reminders: {useDefault: false, overrides: []},
     start: {
       dateTime: new Date(Date.parse(event.start.dateTime) - bufferMs).toISOString(),
       timeZone: event.start.timeZone,
@@ -50,7 +52,9 @@ function destinationEventNeedsUpdate(current, desired) {
     return !current[field] ||
       Date.parse(current[field].dateTime) !== Date.parse(desired[field].dateTime) ||
       current[field].timeZone !== desired[field].timeZone;
-  }) || !current.outOfOfficeProperties ||
+  }) || !current.reminders || current.reminders.useDefault !== false ||
+    (current.reminders.overrides || []).length > 0 ||
+    !current.outOfOfficeProperties ||
     current.outOfOfficeProperties.autoDeclineMode !== desired.outOfOfficeProperties.autoDeclineMode ||
     current.outOfOfficeProperties.declineMessage !== desired.outOfOfficeProperties.declineMessage;
 }

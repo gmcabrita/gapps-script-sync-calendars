@@ -13,6 +13,8 @@ function normalizeCalendarResponse(resource) {
   const event = structuredClone(resource);
   if (event.transparency === 'opaque') delete event.transparency;
   if (event.visibility === 'default') delete event.visibility;
+  // Calendar omits an empty reminder overrides list in responses.
+  if (event.reminders?.overrides?.length === 0) delete event.reminders.overrides;
   return event;
 }
 
